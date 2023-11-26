@@ -1,7 +1,16 @@
 # %%
-import requests, requests_cache, logging, time, dotenv, os, pandas as pd
+import os
+import time
+import logging
+import dotenv
+import requests
+import requests_cache
+import datetime
+import pandas as pd
 from IPython.display import clear_output
 from tqdm import tqdm
+import boto3
+from io import StringIO
 
 requests_cache.install_cache()
 
@@ -10,7 +19,7 @@ dotenv.load_dotenv(dotenv.find_dotenv())
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-#%%
+
 def lastfm_get(payload):
     # get enviroment variables and define headers and URL
     headers = {"user-agent": os.getenv("USER_AGENT")}
@@ -27,7 +36,6 @@ def lastfm_get(payload):
         return None
 
 
-#%%
 def lookup_tags(artist):
     response = lastfm_get({"method": "artist.getTopTags", "artist": artist})
 
@@ -45,14 +53,11 @@ def lookup_tags(artist):
     return tags_str
 
 
-
-# %%
-
 def get_responses(method, limit):
     responses = []
     page = 1
-    total_pages=10
-    
+    total_pages = 10
+
     while page <= total_pages:
         payload = {"method": method, "limit": limit, "page": page}
 
@@ -87,30 +92,48 @@ def get_responses(method, limit):
     return responses
 
 
-#%%
-# Chamar a função para obter as respostas
+def create_artists_dataframe(responses):
+    frames = [pd.DataFrame(r.json()["artists"]["artist"]) for r in responses]
+    return pd.concat(frames)
 
-responses = get_responses(method="chart.gettopartists", limit= 500)
 
-frames = [pd.DataFrame(r.json()["artists"]["artist"]) for r in responses]
+def process_artists_dataframe(artists):
+    artists = artists.drop("image", axis=1)
+    artists = artists.drop_duplicates().reset_index(drop=True)
+    artists[["playcount", "listeners"]] = artists[["playcount", "listeners"]].astype(
+        int
+    )
+    artists = artists.sort_values("listeners", ascending=False)
+    tqdm.pandas()
+    artists["tags"] = artists["name"].progress_apply(
+        lookup_tags
+    )  # progress_apply function is used to apply the lookup_tags function to each element (artist name) in the 'name' column.
+    return artists
 
-artists = pd.concat(frames)
 
-artists = artists.drop("image", axis=1)
+def save_artists_to_csv(artists, filename):
+    artists.to_csv(filename, index=False)
 
-artists = artists.drop_duplicates().reset_index(drop=True)
 
-artists[["playcount", "listeners"]] = artists[["playcount", "listeners"]].astype(int)
+def save_artists_to_s3(artists, bucket_name, filename):
+    s3 = boto3.client("s3")
+    csv_buffer = StringIO()
+    artists.to_csv(csv_buffer, index=False)
+    csv_data = csv_buffer.getvalue()
+    s3.put_object(Body=csv_data, Bucket=bucket_name, Key=filename)
 
-artists = artists.sort_values("listeners", ascending=False)
 
-artists.to_csv("artists.csv", index=False)
+responses = get_responses(method="chart.gettopartists", limit=500)
+artists = create_artists_dataframe(responses)
+artists = process_artists_dataframe(artists)
 
-#%%
-# progress_apply function is used to apply the lookup_tags function to each element (artist name) in the 'name' column.
-tqdm.pandas()
-artists["tags"] = artists["name"].progress_apply(lookup_tags)
-#%%
+save_artists_to_s3(
+    artists,
+    bucket_name="lastfm-raw",
+    filename=f"Artists/extracted_at={datetime.datetime.now().date()}/Artists_{datetime.datetime.now()}.csv",
+)
+
+save_artists_to_csv(
+    artists, "/home/ricardo/Documentos/Desenvolvimento/LastfmAPI/artists.csv"
+)
 artists.head(10)
-
-# %%
