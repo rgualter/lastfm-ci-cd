@@ -26,6 +26,7 @@ def lastfm_get(payload):
         logger.error(f"Error making LastFM request: {e}")
         return None
 
+
 #%%
 def lookup_tags(artist):
     response = lastfm_get({"method": "artist.getTopTags", "artist": artist})
@@ -43,14 +44,17 @@ def lookup_tags(artist):
         time.sleep(0.30)
     return tags_str
 
+
+
 # %%
 
-def get_top_artists_data():
+def get_responses(method, limit):
     responses = []
     page = 1
-    total_pages=10 # dummy variable to start 
+    total_pages=10
+    
     while page <= total_pages:
-        payload = {"method": "chart.gettopartists", "limit": 500, "page": page}
+        payload = {"method": method, "limit": limit, "page": page}
 
         # Imprimir alguma saída para visualizar o status
         print(f"Requesting page {page}/{total_pages}")
@@ -84,9 +88,9 @@ def get_top_artists_data():
 
 
 #%%
-# Criar DataFrames a partir das respostas
+# Chamar a função para obter as respostas
 
-responses = get_top_artists_data()
+responses = get_responses(method="chart.gettopartists", limit= 500)
 
 frames = [pd.DataFrame(r.json()["artists"]["artist"]) for r in responses]
 
