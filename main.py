@@ -45,43 +45,49 @@ def lookup_tags(artist):
 
 # %%
 
-responses = []
+def get_top_artists_data():
+    responses = []
+    page = 1
+    total_pages=10 # dummy variable to start 
+    while page <= total_pages:
+        payload = {"method": "chart.gettopartists", "limit": 500, "page": page}
 
-page = 1
-total_pages = 10  # this is just a dummy number to start the loop
+        # Imprimir alguma saída para visualizar o status
+        print(f"Requesting page {page}/{total_pages}")
+        # Limpar a saída para organizar as coisas
+        clear_output(wait=True)
 
-while page <= total_pages:
-    payload = {"method": "chart.gettopartists", "limit": 500, "page": page}
+        # Fazer a chamada da API
+        response = lastfm_get(payload)
 
-    # print some output so we can see the status
-    print(f"Requesting page {page}/{total_pages}")
-    # clear the output to make things neater
-    clear_output(wait=True)
+        # Se ocorrer um erro, imprimir a resposta e interromper o loop
+        if response is None or response.status_code != 200:
+            print("Error in API response.")
+            break
 
-    # make the API call
-    response = lastfm_get(payload)
+        # Extrair informações de paginação
+        page = int(response.json()["artists"]["@attr"]["page"])
+        total_pages = 1
+        # total_pages = int(response.json()['artists']['@attr']['totalPages'])
 
-    # if we get an error, print the response and halt the loop
-    if response.status_code != 200:
-        print(response.text)
-        break
+        # Anexar a resposta
+        responses.append(response)
 
-    # extract pagination info
-    page = int(response.json()["artists"]["@attr"]["page"])
-    total_pages = 1
-    # total_pages = int(response.json()['artists']['@attr']['totalPages'])
+        # Se não for um resultado em cache, aguardar um curto período
+        if not getattr(response, "from_cache", False):
+            time.sleep(0.30)
 
-    # append response
-    responses.append(response)
+        # Incrementar o número da página
+        page += 1
 
-    # if it's not a cached result, sleep
-    if not getattr(response, "from_cache", False):
-        time.sleep(0.30)
+    return responses
 
-    # increment the page number
-    page += 1
 
-# %%
+#%%
+# Criar DataFrames a partir das respostas
+
+responses = get_top_artists_data()
+
 frames = [pd.DataFrame(r.json()["artists"]["artist"]) for r in responses]
 
 artists = pd.concat(frames)
