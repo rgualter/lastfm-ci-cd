@@ -1,18 +1,33 @@
-# %%
-import requests, requests_cache, logging, time, dotenv, os, pandas as pd
-from IPython.display import clear_output
-from tqdm import tqdm
+import logging
+import os
+import time
+from typing import List, Dict, Any
 
+import pandas as pd
+import requests
+import requests_cache
+from dotenv import load_dotenv
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# Install cache for requests
 requests_cache.install_cache()
 
-dotenv.load_dotenv(dotenv.find_dotenv())
+# Load environment variables
+load_dotenv()
 
-logger = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
 
-#%%
-def lastfm_get(payload):
-    # get enviroment variables and define headers and URL
+def lastfm_get(payload: Dict[str, Any]) -> requests.Response | None:
+    """
+    Makes a GET request to the Last.fm API.
+
+    Args:
+        payload: The parameters for the API request.
+
+    Returns:
+        The response from the API, or None if an error occurred.
+    """
     headers = {"user-agent": os.getenv("USER_AGENT")}
     url = "https://ws.audioscrobbler.com/2.0/"
     payload["api_key"] = os.getenv("API_KEY")
@@ -23,84 +38,107 @@ def lastfm_get(payload):
         response.raise_for_status()
         return response
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error making LastFM request: {e}")
+        logging.error(f"Error making LastFM request: {e}")
         return None
 
-#%%
-def lookup_tags(artist):
+
+def get_top_artists(limit: int = 500) -> List[Dict[str, Any]]:
+    """
+    Fetches the top artists from the Last.fm API.
+
+    Args:
+        limit: The number of artists to fetch per page.
+
+    Returns:
+        A list of artist data.
+    """
+    page = 1
+    total_pages = 1
+    all_artists = []
+
+    while page <= total_pages:
+        logging.info(f"Requesting page {page}/{total_pages or '...'}")
+        payload = {"method": "chart.gettopartists", "limit": limit, "page": page}
+        response = lastfm_get(payload)
+
+        if not response or response.status_code != 200:
+            logging.error(f"Failed to fetch data: {response.text if response else 'No response'}")
+            break
+
+        data = response.json()
+        all_artists.extend(data["artists"]["artist"])
+
+        if page == 1:
+            total_pages = int(data['artists']['@attr']['totalPages'])
+
+        if not getattr(response, "from_cache", False):
+            time.sleep(0.30)
+
+        page += 1
+
+    return all_artists
+
+
+def process_artist_data(artists: List[Dict[str, Any]]) -> pd.DataFrame:
+    """
+    Processes the raw artist data into a pandas DataFrame.
+
+    Args:
+        artists: A list of artist data.
+
+    Returns:
+        A DataFrame with the processed artist data.
+    """
+    df = pd.DataFrame(artists)
+    df = df.drop("image", axis=1)
+    df = df.drop_duplicates().reset_index(drop=True)
+    df[["playcount", "listeners"]] = df[["playcount", "listeners"]].astype(int)
+    return df.sort_values("listeners", ascending=False)
+
+
+def lookup_tags(artist: str) -> str | None:
+    """
+    Looks up the top tags for an artist.
+
+    Args:
+        artist: The name of the artist.
+
+    Returns:
+        A string with the top three tags, or None if an error occurred.
+    """
     response = lastfm_get({"method": "artist.getTopTags", "artist": artist})
 
-    # if there's an error, just return nothing
-    if response.status_code != 200:
+    if not response or response.status_code != 200:
         return None
 
-    # extract the top three tags and turn them into a string
-    tags = [t["name"] for t in response.json()["toptags"]["tag"][:3]]
-    tags_str = ", ".join(tags)
+    try:
+        tags = [t["name"] for t in response.json()["toptags"]["tag"][:3]]
+        return ", ".join(tags)
+    except KeyError:
+        return None
+    finally:
+        if response and not getattr(response, "from_cache", False):
+            time.sleep(0.30)
 
-    # rate limiting
-    if not getattr(response, "from_cache", False):
-        time.sleep(0.30)
-    return tags_str
 
-# %%
+def main():
+    """
+    Main function to fetch, process, and save artist data.
+    """
+    top_artists = get_top_artists()
+    if not top_artists:
+        logging.info("No artist data fetched. Exiting.")
+        return
 
-responses = []
+    artists_df = process_artist_data(top_artists)
 
-page = 1
-total_pages = 10  # this is just a dummy number to start the loop
+    logging.info("Looking up tags for artists...")
+    artists_df["tags"] = artists_df["name"].apply(lookup_tags)
 
-while page <= total_pages:
-    payload = {"method": "chart.gettopartists", "limit": 500, "page": page}
+    artists_df.to_csv("artists.csv", index=False)
+    logging.info("Artist data saved to artists.csv")
+    print(artists_df.head(10))
 
-    # print some output so we can see the status
-    print(f"Requesting page {page}/{total_pages}")
-    # clear the output to make things neater
-    clear_output(wait=True)
 
-    # make the API call
-    response = lastfm_get(payload)
-
-    # if we get an error, print the response and halt the loop
-    if response.status_code != 200:
-        print(response.text)
-        break
-
-    # extract pagination info
-    page = int(response.json()["artists"]["@attr"]["page"])
-    total_pages = 1
-    # total_pages = int(response.json()['artists']['@attr']['totalPages'])
-
-    # append response
-    responses.append(response)
-
-    # if it's not a cached result, sleep
-    if not getattr(response, "from_cache", False):
-        time.sleep(0.30)
-
-    # increment the page number
-    page += 1
-
-# %%
-frames = [pd.DataFrame(r.json()["artists"]["artist"]) for r in responses]
-
-artists = pd.concat(frames)
-
-artists = artists.drop("image", axis=1)
-
-artists = artists.drop_duplicates().reset_index(drop=True)
-
-artists[["playcount", "listeners"]] = artists[["playcount", "listeners"]].astype(int)
-
-artists = artists.sort_values("listeners", ascending=False)
-
-artists.to_csv("artists.csv", index=False)
-
-#%%
-# progress_apply function is used to apply the lookup_tags function to each element (artist name) in the 'name' column.
-tqdm.pandas()
-artists["tags"] = artists["name"].progress_apply(lookup_tags)
-#%%
-artists.head(10)
-
-# %%
+if __name__ == "__main__":
+    main()
